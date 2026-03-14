@@ -21,6 +21,9 @@ jobs:
           echo "正在抓取来源列表..."
           RAW=$(curl -fsSL "https://www.macat.vip/list.txt")
 
+          # 确保目录存在
+          mkdir -p Special
+
           # 生成文件头注释
           UPDATE_TIME=$(TZ='Asia/Taipei' date '+%Y-%m-%d %H:%M:%S')
           {
