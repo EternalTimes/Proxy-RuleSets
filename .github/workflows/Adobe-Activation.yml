@@ -6,6 +6,9 @@ on:
     - cron: '0 1 * * *'
   workflow_dispatch: # 允许手动触发
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   update-list:
     runs-on: ubuntu-latest
@@ -50,21 +53,21 @@ jobs:
                 echo "DOMAIN,${domain}"
               fi
             done
-          } > Special/App-Activation.list
+          } > Special/Adobe-Activation.list
 
-          echo "转换完成，共生成 $(grep -c '^DOMAIN,' Special/App-Activation.list) 条规则"
+          echo "转换完成，共生成 $(grep -c '^DOMAIN,' Special/Adobe-Activation.list) 条规则"
 
       - name: Commit and push if changed
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add Special/App-Activation.list
+          git add Special/Adobe-Activation.list
 
           if git diff --cached --quiet; then
             echo "列表无变化，跳过提交"
           else
-            COUNT=$(grep -c '^DOMAIN,' Special/App-Activation.list)
+            COUNT=$(grep -c '^DOMAIN,' Special/Adobe-Activation.list)
             git commit -m "chore: 自动更新 Adobe 激活阻断列表（${COUNT} 条规则）"
             git push
             echo "已成功推送更新"
