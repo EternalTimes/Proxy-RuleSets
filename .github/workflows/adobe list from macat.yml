@@ -1,0 +1,68 @@
+name: Update Adobe Block List
+
+on:
+  schedule:
+    # 每天 UTC 01:00 执行（台湾时间 09:00）
+    - cron: '0 1 * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  update-list:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch and convert list
+        run: |
+          echo "正在抓取来源列表..."
+          RAW=$(curl -fsSL "https://www.macat.vip/list.txt")
+
+          # 生成文件头注释
+          UPDATE_TIME=$(TZ='Asia/Taipei' date '+%Y-%m-%d %H:%M:%S')
+          {
+            echo "# Adobe 激活阻断域名规则"
+            echo "# 来源: https://www.macat.vip/list.txt"
+            echo "# 格式转换自 hosts 格式（0.0.0.0）→ Clash/Surge DOMAIN 规则"
+            echo "# 更新时间: ${UPDATE_TIME} (CST)"
+            echo "#"
+
+            # 转换逻辑：
+            # - 跳过空行
+            # - 以 # 开头的行保留为注释（过滤掉乱码，只保留 ASCII 可读注释）
+            # - "0.0.0.0 <domain>" 转换为 "DOMAIN,<domain>"
+            echo "$RAW" | while IFS= read -r line; do
+              # 跳过空行
+              [[ -z "$line" ]] && continue
+
+              # 如果是注释行，跳过（来源注释含中文乱码，不保留）
+              [[ "$line" == \#* ]] && continue
+
+              # 匹配 "0.0.0.0 <domain>" 格式
+              if [[ "$line" =~ ^0\.0\.0\.0[[:space:]]+([^[:space:]]+)$ ]]; then
+                domain="${BASH_REMATCH[1]}"
+                echo "DOMAIN,${domain}"
+              fi
+            done
+          } > Special/App-Activation.list
+
+          echo "转换完成，共生成 $(grep -c '^DOMAIN,' Special/App-Activation.list) 条规则"
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add Special/App-Activation.list
+
+          if git diff --cached --quiet; then
+            echo "列表无变化，跳过提交"
+          else
+            COUNT=$(grep -c '^DOMAIN,' Special/App-Activation.list)
+            git commit -m "chore: 自动更新 Adobe 激活阻断列表（${COUNT} 条规则）"
+            git push
+            echo "已成功推送更新"
+          fi
