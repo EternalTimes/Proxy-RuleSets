@@ -1,0 +1,284 @@
+name: Update Apple Advanced Rules
+
+on:
+  schedule:
+    # 每天 UTC 01:00 执行（台湾时间 09:00）
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  OUTPUT_FILE: Special/Apple_Advanced.list
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Apple Advanced Rules
+        run: |
+          mkdir -p Special
+          UPDATE_TIME=$(TZ='Asia/Taipei' date '+%Y-%m-%d %H:%M:%S')
+
+          # ── 1. 抓取 Accademia 上游 YAML ────────────────────────
+          echo "▶ 抓取 Accademia/Apple.yaml ..."
+          APPLE_RAW=$(curl -fsSL \
+            "https://raw.githubusercontent.com/Accademia/Additional_Rule_For_Clash/main/Apple/Apple.yaml" \
+            || echo "")
+
+          echo "▶ 抓取 Accademia/AppleAI.yaml ..."
+          AI_RAW=$(curl -fsSL \
+            "https://raw.githubusercontent.com/Accademia/Additional_Rule_For_Clash/main/AppleAI/AppleAI.yaml" \
+            || echo "")
+
+          echo "▶ 抓取 Accademia/AppleNews.yaml ..."
+          NEWS_RAW=$(curl -fsSL \
+            "https://raw.githubusercontent.com/Accademia/Additional_Rule_For_Clash/main/AppleNews/AppleNews.yaml" \
+            || echo "")
+
+          # ── 2. 实时解析 Apple 官方文档 ─────────────────────────
+          echo "▶ 抓取 Apple 官方文档 (support.apple.com/zh-cn/101555) ..."
+          curl -fsSL \
+            -H "Accept-Language: zh-CN,zh;q=0.9" \
+            -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" \
+            "https://support.apple.com/zh-cn/101555" \
+            -o /tmp/apple_docs.html \
+            || echo "" > /tmp/apple_docs.html
+
+          # 用 Python 解析 HTML，提取各章节的域名规则
+          OFFICIAL_RULES=$(python3 <<'PYEOF'
+import re, html, sys
+from html.parser import HTMLParser
+
+with open("/tmp/apple_docs.html", encoding="utf-8", errors="replace") as f:
+    page = f.read()
+
+class AppleDocsParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.rules         = []     # [(section, host), ...]
+        self.section       = "通用"
+        self.in_table      = False
+        self.in_first_td   = False
+        self.td_index      = 0
+        self.current_text  = []
+        self.in_heading    = False
+        self.heading_text  = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("h2", "h3"):
+            self.in_heading   = True
+            self.heading_text = []
+        elif tag == "table":
+            self.in_table = True
+        elif tag == "tr" and self.in_table:
+            self.td_index = 0
+        elif tag == "td" and self.in_table:
+            self.in_first_td  = (self.td_index == 0)
+            self.current_text = []
+            self.td_index    += 1
+
+    def handle_endtag(self, tag):
+        if tag in ("h2", "h3"):
+            self.section    = html.unescape("".join(self.heading_text)).strip()
+            self.in_heading = False
+        elif tag == "table":
+            self.in_table    = False
+            self.in_first_td = False
+        elif tag == "td" and self.in_first_td:
+            raw = html.unescape("".join(self.current_text)).strip()
+            raw = re.sub(r'[\u200b\u200c\u200d\ufeff\xa0]', '', raw).strip()
+            if raw:
+                self.rules.append((self.section, raw))
+            self.in_first_td = False
+
+    def handle_data(self, data):
+        if self.in_heading:
+            self.heading_text.append(data)
+        elif self.in_first_td:
+            self.current_text.append(data)
+
+def host_to_rule(host):
+    """将 Host 字段转换为 Clash/Surge 规则行"""
+    host = host.strip()
+    # 跳过：空值 / 含空格的说明文字 / 纯 IP 地址
+    if not host or ' ' in host:
+        return None
+    if re.match(r'^\d+\.\d+\.\d+\.\d+', host):
+        return None
+    # *.foo.bar → DOMAIN-SUFFIX,foo.bar
+    if host.startswith('*.'):
+        return f"DOMAIN-SUFFIX,{host[2:]}"
+    # 普通域名
+    if re.match(r'^[a-zA-Z0-9\-\.]+$', host):
+        return f"DOMAIN,{host}"
+    return None
+
+parser = AppleDocsParser()
+parser.feed(page)
+
+current_section = None
+lines = []
+for section, host in parser.rules:
+    rule = host_to_rule(host)
+    if not rule:
+        continue
+    if section != current_section:
+        current_section = section
+        lines.append(f"# ── {section}")
+    lines.append(rule)
+
+print("\n".join(lines))
+PYEOF
+          )
+
+          OFFICIAL_COUNT=$(echo "$OFFICIAL_RULES" | grep -cE '^(DOMAIN|IP-CIDR)' || true)
+          echo "✅ 官方文档解析完成：${OFFICIAL_COUNT} 条规则"
+
+          # ── 3. 从 Accademia YAML 提取纯规则行 ──────────────────
+          extract_rules() {
+            echo "$1" | grep -E '^\s+-\s+(DOMAIN|IP-CIDR)' | sed 's/^\s*-\s*//'
+          }
+          APPLE_RULES=$(extract_rules "$APPLE_RAW")
+          AI_RULES=$(extract_rules "$AI_RAW")
+          NEWS_RULES=$(extract_rules "$NEWS_RAW")
+
+          # ── 4. 手工补充（官方文档 HTML 表格未收录的专项规则）──
+          read -r -d '' SUPPLEMENT <<'EOF'
+# ── Apple Intelligence / 私有云计算（需独立 AI 节点）
+DOMAIN,guzzoni.apple.com
+DOMAIN-SUFFIX,smoot.apple.com
+DOMAIN,apple-relay.cloudflare.com
+DOMAIN,cp4.cloudflare.com
+DOMAIN,apple-relay.fastly-edge.com
+DOMAIN,apple-relay.apple.com
+
+# ── iCloud 专用代理 Private Relay（需支持 UDP/QUIC 节点）
+DOMAIN,mask.icloud.com
+DOMAIN,mask-h2.icloud.com
+DOMAIN,mask-api.icloud.com
+
+# ── Apple News（需美/英/澳节点）
+DOMAIN-SUFFIX,apple.news
+DOMAIN,news.apple.com
+DOMAIN,edge.apple.com
+DOMAIN-SUFFIX,edge.apple.com
+DOMAIN,news-events.apple.com
+DOMAIN,news-client.apple.com
+
+# ── Apple Books
+DOMAIN,books.apple.com
+DOMAIN-SUFFIX,books.apple.com
+DOMAIN,books-analytics.apple.com
+
+# ── Apple TV+
+DOMAIN,tv.apple.com
+DOMAIN-SUFFIX,tv.apple.com
+DOMAIN,uts-api.itunes.apple.com
+DOMAIN,hls.itunes.apple.com
+DOMAIN,np.itunes.apple.com
+
+# ── Apple Music
+DOMAIN,music.apple.com
+DOMAIN-SUFFIX,music.apple.com
+DOMAIN,lp-playback.music.apple.com
+DOMAIN,aod.itunes.apple.com
+DOMAIN,aodp.itunes.apple.com
+
+# ── Apple Maps
+DOMAIN-SUFFIX,apple-mapkit.com
+DOMAIN-SUFFIX,ls.apple.com
+
+# ── 通用 CDN 兜底
+DOMAIN-SUFFIX,cdn-apple.com
+DOMAIN-SUFFIX,gc.apple.com
+DOMAIN-SUFFIX,apple.com
+
+# ── Apple IP 段
+IP-CIDR,17.0.0.0/8,no-resolve
+IP-CIDR6,2403:300::/32,no-resolve
+IP-CIDR6,2620:149::/32,no-resolve
+IP-CIDR6,2a01:b740::/32,no-resolve
+EOF
+
+          # ── 5. 写出最终文件 ────────────────────────────────────
+          {
+            cat <<HEADER
+# Apple 进阶分流规则 (Clash Classical / Surge / Shadowrocket / Quantumult X)
+# 上游来源: https://github.com/Accademia/Additional_Rule_For_Clash
+# 官方文档: https://support.apple.com/zh-cn/101555
+# 更新时间: ${UPDATE_TIME} (CST)
+#
+
+HEADER
+
+            echo "# ════════════════════════════════════════════════════"
+            echo "# 第一部分：Apple 官方文档实时抓取（自动解析各章节）"
+            echo "# ════════════════════════════════════════════════════"
+            echo "$OFFICIAL_RULES"
+            echo ""
+
+            echo "# ════════════════════════════════════════════════════"
+            echo "# 第二部分：手工补充专项规则（AI / 专用代理 / News 等）"
+            echo "# ════════════════════════════════════════════════════"
+            echo "$SUPPLEMENT"
+            echo ""
+
+            if [ -n "$AI_RULES" ] || [ -n "$NEWS_RULES" ] || [ -n "$APPLE_RULES" ]; then
+              echo "# ════════════════════════════════════════════════════"
+              echo "# 第三部分：Accademia 上游合并"
+              echo "# ════════════════════════════════════════════════════"
+              [ -n "$AI_RULES"    ] && { echo "# ── AppleAI.yaml";   echo "$AI_RULES";    echo ""; }
+              [ -n "$NEWS_RULES"  ] && { echo "# ── AppleNews.yaml"; echo "$NEWS_RULES";  echo ""; }
+              [ -n "$APPLE_RULES" ] && { echo "# ── Apple.yaml";     echo "$APPLE_RULES"; echo ""; }
+            fi
+
+          } > "$OUTPUT_FILE"
+
+          # ── 6. Python 去重 ─────────────────────────────────────
+          python3 - "$OUTPUT_FILE" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    lines = f.readlines()
+
+seen, out = set(), []
+for line in lines:
+    s = line.rstrip('\n')
+    if s.startswith('#') or s == '':
+        out.append(line)
+        continue
+    key = s.strip()
+    if key not in seen:
+        seen.add(key)
+        out.append(line)
+
+with open(path, 'w') as f:
+    f.writelines(out)
+
+domain_count = sum(1 for k in seen if not k.startswith('IP-CIDR'))
+ip_count     = sum(1 for k in seen if k.startswith('IP-CIDR'))
+print(f"✅ 去重完成：DOMAIN 规则 {domain_count} 条，IP-CIDR {ip_count} 条，共 {len(seen)} 条")
+PYEOF
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "$OUTPUT_FILE"
+
+          if git diff --cached --quiet; then
+            echo "✅ 规则无变化，跳过提交"
+          else
+            TOTAL=$(grep -cE '^(DOMAIN|IP-CIDR)' "$OUTPUT_FILE" || true)
+            git commit -m "chore: 自动更新 Apple 进阶分流规则（共 ${TOTAL} 条）"
+            git push
+            echo "✅ 已推送更新（${TOTAL} 条规则）"
+          fi
