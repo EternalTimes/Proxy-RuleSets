@@ -1,7 +1,7 @@
 # Adobe 激活阻断域名规则
 # 来源: https://www.macat.vip/list.txt
 # 格式转换自 hosts 格式（0.0.0.0）→ Clash/Surge DOMAIN 规则
-# 更新时间: 2026-03-26 11:45:09 (CST)
+# 更新时间: 2026-03-27 11:47:06 (CST)
 #
 DOMAIN,cc-api-data.adobe.io
 DOMAIN,fp.adobestats.io
@@ -3551,3 +3551,6 @@ DOMAIN,m6zd0jnw.xwk4b.adobestats.io
 DOMAIN,adobe.io
 DOMAIN,v8qopmtw.lqn0m.adobestats.io
 DOMAIN,yfin3djujv.xwk4b.adobestats.io
+DOMAIN,f5jeo6zi0.xwk4b.adobestats.io
+DOMAIN,id15spd31omb.xwk4b.adobestats.io
+DOMAIN,vsbqj3atp.wzwva.adobestats.io
